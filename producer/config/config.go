@@ -9,7 +9,7 @@ type Config struct {
 	KafkaBroker string
 	KafkaTopic  string
 	WorkerCount int
-	BatchSize   int
+	ChannelSize int
 	Port        string
 }
 
@@ -17,8 +17,8 @@ func NewDefaultConfig() *Config {
 	return &Config{
 		KafkaBroker: getEnv("KAFKA_BROKER", "localhost:9092"),
 		KafkaTopic:  getEnv("KAFKA_TOPIC", "demo-topic"),
-		WorkerCount: getEnvInt("WORKER_COUNT", 5000),
-		BatchSize:   getEnvInt("BATCH_SIZE", 100),
+		WorkerCount: getEnvInt("WORKER_COUNT", 10000),
+		ChannelSize: getEnvInt("CHANNEL_SIZE", 1000),
 		Port:        getEnv("SERVER_PORT", "8081"),
 	}
 }
