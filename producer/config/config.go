@@ -18,7 +18,7 @@ func NewDefaultConfig() *Config {
 		KafkaBroker: getEnv("KAFKA_BROKER", "localhost:9092"),
 		KafkaTopic:  getEnv("KAFKA_TOPIC", "demo-topic"),
 		WorkerCount: getEnvInt("WORKER_COUNT", 5000),
-		BatchSize:   getEnvInt("BATCH_SIZE", 1000),
+		BatchSize:   getEnvInt("BATCH_SIZE", 100),
 		Port:        getEnv("SERVER_PORT", "8081"),
 	}
 }
