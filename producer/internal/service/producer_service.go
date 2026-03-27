@@ -64,7 +64,7 @@ func (s *producerService) Produce(ctx context.Context, count int) (ports.Produce
 					logger.Error(ctx, "producerService.Produce", "failed to write message", err)
 					errs.Add(1)
 				} else {
-					logger.Infof(ctx, "producerService.Produce", "message sent: key=%s", string(msg.Key))
+					logger.Debugf(ctx, "producerService.Produce", "message sent: key=%s", string(msg.Key))
 					sent.Add(1)
 				}
 			}
@@ -73,6 +73,7 @@ func (s *producerService) Produce(ctx context.Context, count int) (ports.Produce
 
 	// Dispatcher: generates all messages and pushes them into the channel.
 	go func() {
+		defer close(jobs)
 		for i := 0; i < count; i++ {
 			msg := model.Message{
 				ID:        uuid.New().String(),
@@ -89,12 +90,13 @@ func (s *producerService) Produce(ctx context.Context, count int) (ports.Produce
 				continue
 			}
 
-			jobs <- kafka.Message{
-				Key:   []byte(msg.ID),
-				Value: data,
+			select {
+			case jobs <- kafka.Message{Key: []byte(msg.ID), Value: data}:
+			case <-ctx.Done():
+				logger.Warn(ctx, "producerService.Produce", "dispatcher cancelled, stopping message generation")
+				return
 			}
 		}
-		close(jobs)
 	}()
 
 	wg.Wait()

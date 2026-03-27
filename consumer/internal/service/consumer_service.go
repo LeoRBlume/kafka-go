@@ -13,6 +13,8 @@ import (
 	"github.com/seu-usuario/kafka-go/consumer/internal/ports"
 )
 
+const readBackoff = 2 * time.Second
+
 type consumerService struct {
 	reader *kafka.Reader
 }
@@ -34,10 +36,15 @@ func (s *consumerService) Start(ctx context.Context) error {
 	for {
 		m, err := s.reader.ReadMessage(ctx)
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil
 			}
 			logger.Error(ctx, "consumerService.Start", "failed to read message", err)
+			select {
+			case <-time.After(readBackoff):
+			case <-ctx.Done():
+				return nil
+			}
 			continue
 		}
 
