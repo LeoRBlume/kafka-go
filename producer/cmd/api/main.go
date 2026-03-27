@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/LeoRBlume/go-libs/logger"
 	"github.com/seu-usuario/kafka-go/producer/config"
 	"github.com/seu-usuario/kafka-go/producer/internal/controller"
 	"github.com/seu-usuario/kafka-go/producer/internal/router"
@@ -16,9 +16,17 @@ import (
 )
 
 func main() {
+	logger.Setup(logger.Config{
+		ServiceName: "producer",
+		Level:       logger.LevelInfo,
+	})
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	cfg := config.NewDefaultConfig()
 
-	slog.Info("starting producer", "port", cfg.Port)
+	logger.Infof(ctx, "main", "starting producer on port %s", cfg.Port)
 
 	svc := service.NewProducerService(cfg)
 	defer svc.Close()
@@ -31,25 +39,22 @@ func main() {
 		Handler: r,
 	}
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
-
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server error", "error", err)
+			logger.Error(ctx, "main", "server error", err)
 			os.Exit(1)
 		}
 	}()
 
-	slog.Info("producer running", "port", cfg.Port)
-	<-quit
+	logger.Infof(ctx, "main", "producer running on port %s", cfg.Port)
+	<-ctx.Done()
 
-	slog.Info("shutting down producer")
+	logger.Info(ctx, "main", "shutting down producer")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
-		slog.Error("shutdown error", "error", err)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Error(shutdownCtx, "main", "shutdown error", err)
 	}
 }

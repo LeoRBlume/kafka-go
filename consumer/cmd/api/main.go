@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/LeoRBlume/go-libs/logger"
 	"github.com/seu-usuario/kafka-go/consumer/config"
 	"github.com/seu-usuario/kafka-go/consumer/internal/controller"
 	"github.com/seu-usuario/kafka-go/consumer/internal/router"
@@ -16,19 +16,24 @@ import (
 )
 
 func main() {
+	logger.Setup(logger.Config{
+		ServiceName: "consumer",
+		Level:       logger.LevelInfo,
+	})
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	cfg := config.NewDefaultConfig()
 
-	slog.Info("starting consumer", "port", cfg.Port)
+	logger.Infof(ctx, "main", "starting consumer on port %s", cfg.Port)
 
 	svc := service.NewConsumerService(cfg)
 	defer svc.Close()
 
 	go func() {
 		if err := svc.Start(ctx); err != nil {
-			slog.Error("consumer stopped with error", "error", err)
+			logger.Error(ctx, "main", "consumer stopped with error", err)
 		}
 	}()
 
@@ -42,20 +47,20 @@ func main() {
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server error", "error", err)
+			logger.Error(ctx, "main", "server error", err)
 			os.Exit(1)
 		}
 	}()
 
-	slog.Info("consumer running", "port", cfg.Port)
+	logger.Infof(ctx, "main", "consumer running on port %s", cfg.Port)
 	<-ctx.Done()
 
-	slog.Info("shutting down consumer")
+	logger.Info(ctx, "main", "shutting down consumer")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("shutdown error", "error", err)
+		logger.Error(shutdownCtx, "main", "shutdown error", err)
 	}
 }

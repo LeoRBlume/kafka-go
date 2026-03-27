@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"time"
 
+	"github.com/LeoRBlume/go-libs/logger"
 	kafka "github.com/segmentio/kafka-go"
 	"github.com/seu-usuario/kafka-go/consumer/config"
 	"github.com/seu-usuario/kafka-go/consumer/internal/model"
@@ -37,29 +37,21 @@ func (s *consumerService) Start(ctx context.Context) error {
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}
-			slog.Error("failed to read message", "error", err)
+			logger.Error(ctx, "consumerService.Start", "failed to read message", err)
 			continue
 		}
 
 		var msg model.Message
 		if err := json.Unmarshal(m.Value, &msg); err != nil {
-			slog.Error("failed to unmarshal message", "error", err, "offset", m.Offset)
+			logger.Errorf(ctx, "consumerService.Start", "failed to unmarshal message at offset %d", err, m.Offset)
 			continue
 		}
 
 		latency := time.Since(msg.Timestamp)
 
-		slog.Info("message received",
-			"offset", m.Offset,
-			"partition", m.Partition,
-			"topic", m.Topic,
-			"key", string(m.Key),
-			"message_id", msg.ID,
-			"seq_number", msg.SeqNumber,
-			"payload", msg.Payload,
-			"timestamp", msg.Timestamp,
-			"latency", latency,
-		)
+		logger.Infof(ctx, "consumerService.Start",
+			"message received: id=%s seq=%d partition=%d offset=%d latency=%s",
+			msg.ID, msg.SeqNumber, m.Partition, m.Offset, latency)
 	}
 }
 

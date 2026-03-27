@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/LeoRBlume/go-libs/logger"
 	"github.com/google/uuid"
 	kafka "github.com/segmentio/kafka-go"
 	"github.com/seu-usuario/kafka-go/producer/config"
@@ -44,6 +45,8 @@ func NewProducerService(cfg *config.Config) ports.ProducerPort {
 func (s *producerService) Produce(ctx context.Context, count int) (ports.ProduceResult, error) {
 	start := time.Now()
 
+	logger.Infof(ctx, "producerService.Produce", "starting to produce %d messages", count)
+
 	// Buffer sized by config so the dispatcher rarely blocks.
 	jobs := make(chan kafka.Message, s.cfg.WorkerCount*s.cfg.BatchSize)
 
@@ -58,8 +61,10 @@ func (s *producerService) Produce(ctx context.Context, count int) (ports.Produce
 			defer wg.Done()
 			for msg := range jobs {
 				if err := s.writer.WriteMessages(ctx, msg); err != nil {
+					logger.Error(ctx, "producerService.Produce", "failed to write message", err)
 					errs.Add(1)
 				} else {
+					logger.Infof(ctx, "producerService.Produce", "message sent: key=%s", string(msg.Key))
 					sent.Add(1)
 				}
 			}
@@ -79,6 +84,7 @@ func (s *producerService) Produce(ctx context.Context, count int) (ports.Produce
 
 			data, err := json.Marshal(msg)
 			if err != nil {
+				logger.Error(ctx, "producerService.Produce", "failed to marshal message", err)
 				errs.Add(1)
 				continue
 			}
@@ -93,11 +99,16 @@ func (s *producerService) Produce(ctx context.Context, count int) (ports.Produce
 
 	wg.Wait()
 
-	return ports.ProduceResult{
+	result := ports.ProduceResult{
 		TotalSent:   int(sent.Load()),
 		TotalErrors: int(errs.Load()),
 		DurationMs:  time.Since(start).Milliseconds(),
-	}, nil
+	}
+
+	logger.Infof(ctx, "producerService.Produce", "produce complete: sent=%d errors=%d duration=%dms",
+		result.TotalSent, result.TotalErrors, result.DurationMs)
+
+	return result, nil
 }
 
 func (s *producerService) Close() error {
