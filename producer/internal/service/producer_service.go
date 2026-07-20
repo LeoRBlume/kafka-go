@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,8 +23,9 @@ type job struct {
 }
 
 type producerService struct {
-	writer *kafka.Writer
-	jobs   chan job
+	writer         *kafka.Writer
+	jobs           chan job
+	entityKeyCount int
 }
 
 // NewProducerService creates a kafka writer, starts a persistent worker pool and returns a ProducerPort implementation.
@@ -36,9 +38,15 @@ func NewProducerService(cfg *config.Config) ports.ProducerPort {
 		Compression:  kafka.Snappy,
 	}
 
+	entityKeyCount := cfg.EntityKeyCount
+	if entityKeyCount < 1 {
+		entityKeyCount = 1
+	}
+
 	svc := &producerService{
-		writer: writer,
-		jobs:   make(chan job, cfg.ChannelSize),
+		writer:         writer,
+		jobs:           make(chan job, cfg.ChannelSize),
+		entityKeyCount: entityKeyCount,
 	}
 
 	for i := 0; i < cfg.WorkerCount; i++ {
@@ -65,17 +73,20 @@ func (s *producerService) Produce(ctx context.Context, count int) (ports.Produce
 	var wg sync.WaitGroup
 
 	for i := 0; i < count; i++ {
-		msg := model.Message{
+		entityKey := fmt.Sprintf("card_%d", i%s.entityKeyCount)
+
+		msg := model.Event{
 			ID:        uuid.New().String(),
-			Payload:   fmt.Sprintf("message payload %d", i),
-			Timestamp: time.Now(),
+			EntityKey: entityKey,
+			Value:     rand.Float64() * 100,
+			Timestamp: time.Now().UTC(),
 			Source:    "producer",
 			SeqNumber: i,
 		}
 
 		data, err := json.Marshal(msg)
 		if err != nil {
-			logger.Error(ctx, "producerService.Produce", "failed to marshal message", err)
+			logger.Error(ctx, "producerService.Produce", "failed to marshal event", err)
 			errs.Add(1)
 			continue
 		}
@@ -83,7 +94,7 @@ func (s *producerService) Produce(ctx context.Context, count int) (ports.Produce
 		wg.Add(1)
 		select {
 		case s.jobs <- job{
-			msg: kafka.Message{Key: []byte(msg.ID), Value: data},
+			msg: kafka.Message{Key: []byte(msg.EntityKey), Value: data},
 			done: func(err error) {
 				defer wg.Done()
 				if err != nil {

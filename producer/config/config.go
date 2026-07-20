@@ -6,20 +6,22 @@ import (
 )
 
 type Config struct {
-	KafkaBroker string
-	KafkaTopic  string
-	WorkerCount int
-	ChannelSize int
-	Port        string
+	KafkaBroker    string
+	KafkaTopic     string
+	WorkerCount    int
+	ChannelSize    int
+	EntityKeyCount int
+	Port           string
 }
 
 func NewDefaultConfig() *Config {
 	return &Config{
-		KafkaBroker: getEnv("KAFKA_BROKER", "localhost:9092"),
-		KafkaTopic:  getEnv("KAFKA_TOPIC", "demo-topic"),
-		WorkerCount: getEnvInt("WORKER_COUNT", 10000),
-		ChannelSize: getEnvInt("CHANNEL_SIZE", 1000),
-		Port:        getEnv("SERVER_PORT", "8081"),
+		KafkaBroker:    getEnv("KAFKA_BROKER", "localhost:9092"),
+		KafkaTopic:     getEnv("KAFKA_TOPIC", "demo-topic"),
+		WorkerCount:    getEnvInt("WORKER_COUNT", 10000),
+		ChannelSize:    getEnvInt("CHANNEL_SIZE", 1000),
+		EntityKeyCount: getEnvInt("ENTITY_KEY_COUNT", 10),
+		Port:           getEnv("SERVER_PORT", "8081"),
 	}
 }
 
