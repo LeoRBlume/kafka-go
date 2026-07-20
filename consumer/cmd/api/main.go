@@ -17,7 +17,7 @@ import (
 
 func main() {
 	logger.Setup(logger.Config{
-		ServiceName: "consumer",
+		ServiceName: "aggregator",
 		Level:       logger.LevelInfo,
 	})
 
@@ -26,18 +26,23 @@ func main() {
 
 	cfg := config.NewDefaultConfig()
 
-	logger.Infof(ctx, "main", "starting consumer on port %s", cfg.Port)
+	logger.Infof(ctx, "main", "starting aggregator on port %s (window=%s grace=%s output=%s)",
+		cfg.Port, cfg.WindowSize, cfg.GracePeriod, cfg.OutputTopic)
 
-	svc := service.NewConsumerService(cfg)
+	svc, err := service.NewAggregatorService(cfg)
+	if err != nil {
+		logger.Error(ctx, "main", "failed to create aggregator service", err)
+		os.Exit(1)
+	}
 	defer svc.Close()
 
 	go func() {
 		if err := svc.Start(ctx); err != nil {
-			logger.Error(ctx, "main", "consumer stopped with error", err)
+			logger.Error(ctx, "main", "aggregator stopped with error", err)
 		}
 	}()
 
-	ctrl := controller.NewHealthController()
+	ctrl := controller.NewAggregatorController(svc)
 	r := router.SetupRouter(ctrl)
 
 	srv := &http.Server{
@@ -52,10 +57,10 @@ func main() {
 		}
 	}()
 
-	logger.Infof(ctx, "main", "consumer running on port %s", cfg.Port)
+	logger.Infof(ctx, "main", "aggregator running on port %s", cfg.Port)
 	<-ctx.Done()
 
-	logger.Info(ctx, "main", "shutting down consumer")
+	logger.Info(ctx, "main", "shutting down aggregator")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()

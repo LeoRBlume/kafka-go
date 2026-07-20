@@ -5,11 +5,12 @@ import (
 	"github.com/seu-usuario/kafka-go/consumer/internal/controller"
 )
 
-func SetupRouter(ctrl *controller.HealthController) *gin.Engine {
+func SetupRouter(ctrl *controller.AggregatorController) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
 
 	r.GET("/health", ctrl.Health)
+	r.GET("/metrics", ctrl.Metrics)
 
 	return r
 }

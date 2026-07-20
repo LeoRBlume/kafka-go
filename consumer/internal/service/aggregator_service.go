@@ -267,8 +267,14 @@ type aggregatorService struct {
 	tickWg   sync.WaitGroup
 }
 
+// Aggregator é o serviço de agregação com observabilidade de métricas.
+type Aggregator interface {
+	ports.AggregatorPort
+	MetricsSnapshot() MetricsSnapshot
+}
+
 // NewAggregatorService constrói o serviço de agregação janelada.
-func NewAggregatorService(cfg *config.Config) (ports.AggregatorPort, error) {
+func NewAggregatorService(cfg *config.Config) (Aggregator, error) {
 	store, err := NewDiskStateStore(cfg.StateDir)
 	if err != nil {
 		return nil, err
