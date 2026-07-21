@@ -2,9 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -28,8 +25,6 @@ type aggregator struct {
 
 	wmMu       sync.RWMutex
 	watermarks map[int]time.Time // event-time watermark por partição
-
-	lastOpenCount int // usado para logar a lista completa só quando o conjunto muda
 }
 
 func newAggregator(store ports.StateStorePort, clock ports.Clock, windowSize, grace time.Duration, emit emitFunc) *aggregator {
@@ -176,11 +171,6 @@ func (a *aggregator) closeWindows(ctx context.Context) error {
 		// emissão de uma janela específica nos logs.
 		wCtx := logger.WithTraceID(ctx, e.EntityKey+"|"+e.WindowStart.Format(time.RFC3339))
 
-		logger.Infof(wCtx, "aggregator.closeWindows",
-			"⏰ closing %s [%s → %s): watermark %s passed deadline %s (windowEnd+grace)",
-			e.EntityKey, e.WindowStart.Format("15:04:05"), windowEnd.Format("15:04:05"),
-			wm.Format("15:04:05"), deadline.Format("15:04:05"))
-
 		res := model.WindowResult{
 			EntityKey:   e.EntityKey,
 			WindowStart: e.WindowStart,
@@ -209,59 +199,6 @@ func (a *aggregator) closeWindows(ctx context.Context) error {
 			res.Count, res.Sum, res.Avg)
 	}
 	return nil
-}
-
-// logOpenWindows registra o estado das janelas abertas de forma focada:
-//   - a lista completa (com count/sum de cada bucket) sempre que o conjunto muda;
-//   - um resumo por chamada apontando a PRÓXIMA a fechar e quanto falta de
-//     event-time para o watermark cruzar o deadline (windowEnd + grace).
-func (a *aggregator) logOpenWindows(ctx context.Context) {
-	wm := a.watermark()
-	entries, err := a.store.All()
-	if err != nil {
-		return
-	}
-
-	// ordena por deadline (windowEnd+grace) e entity_key → saída estável, e o
-	// primeiro elemento é sempre a próxima janela a fechar.
-	sort.Slice(entries, func(i, j int) bool {
-		di := entries[i].WindowStart.Add(a.windowSize + a.grace)
-		dj := entries[j].WindowStart.Add(a.windowSize + a.grace)
-		if di.Equal(dj) {
-			return entries[i].EntityKey < entries[j].EntityKey
-		}
-		return di.Before(dj)
-	})
-
-	// lista completa só quando o número de janelas abertas muda (evita flood).
-	if len(entries) != a.lastOpenCount {
-		a.lastOpenCount = len(entries)
-		if len(entries) > 0 {
-			var b strings.Builder
-			for i, e := range entries {
-				if i > 0 {
-					b.WriteString("  |  ")
-				}
-				fmt.Fprintf(&b, "%s[%s) count=%d sum=%.2f",
-					e.EntityKey, e.WindowStart.Format("15:04:05"), e.State.Count, e.State.Sum)
-			}
-			logger.Debugf(ctx, "aggregator.openWindows", "📋 %d janelas abertas: %s", len(entries), b.String())
-		} else {
-			logger.Debug(ctx, "aggregator.openWindows", "📋 0 janelas abertas")
-		}
-	}
-
-	if len(entries) == 0 {
-		return
-	}
-
-	next := entries[0]
-	deadline := next.WindowStart.Add(a.windowSize + a.grace)
-	remaining := deadline.Sub(wm).Truncate(time.Second)
-	logger.Debugf(ctx, "aggregator.openWindows",
-		"⏳ próxima a fechar: %s [%s) count=%d sum=%.2f — fecha quando watermark>%s (faltam +%s de event-time; watermark=%s)",
-		next.EntityKey, next.WindowStart.Format("15:04:05"), next.State.Count, next.State.Sum,
-		deadline.Format("15:04:05"), remaining, wm.Format("15:04:05"))
 }
 
 func average(sum float64, count int64) float64 {
