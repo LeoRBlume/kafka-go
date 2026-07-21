@@ -15,11 +15,7 @@ import (
 	"github.com/seu-usuario/kafka-go/consumer/internal/ports"
 )
 
-const (
-	readBackoff        = 2 * time.Second
-	closeCheckInterval = 5 * time.Second
-	workerChanSize     = 256
-)
+const readBackoff = 2 * time.Second
 
 // emitFunc publica o resultado de uma janela fechada no destino (tópico de saída).
 type emitFunc func(ctx context.Context, res model.WindowResult) error
@@ -237,34 +233,18 @@ func average(sum float64, count int64) float64 {
 	return sum / float64(count)
 }
 
-// partitionWorker processa serialmente as mensagens de uma partição atribuída,
-// garantindo o modelo single-writer por partição.
-type partitionWorker struct {
-	id int
-	ch chan kafka.Message
-
-	mu      sync.Mutex
-	lastMsg kafka.Message
-	hasMsg  bool
-}
-
-// aggregatorService liga o core ao Kafka: um group reader alimenta workers por
-// partição; tickers cuidam do fechamento de janelas e do snapshot+commit.
+// aggregatorService liga o core ao Kafka num loop sequencial e single-threaded:
+// lê uma mensagem, agrega, fecha janelas prontas, faz snapshot e comita o offset,
+// então pega a próxima. Sem workers, canais ou tickers.
 type aggregatorService struct {
 	cfg   *config.Config
 	core  *aggregator
 	store ports.StateStorePort
 
-	reader  *kafka.Reader
-	writer  *kafka.Writer
-	writeMu sync.Mutex
+	reader *kafka.Reader
+	writer *kafka.Writer
 
-	workersMu sync.Mutex
-	workers   map[int]*partitionWorker
-
-	fetchWg  sync.WaitGroup
-	workerWg sync.WaitGroup
-	tickWg   sync.WaitGroup
+	offsets map[int]int64 // próximo offset a comitar por partição (Offset+1)
 }
 
 // Aggregator é o serviço de agregação com observabilidade de métricas.
@@ -299,7 +279,7 @@ func NewAggregatorService(cfg *config.Config) (Aggregator, error) {
 		store:   store,
 		reader:  reader,
 		writer:  writer,
-		workers: make(map[int]*partitionWorker),
+		offsets: make(map[int]int64),
 	}
 	s.core = newAggregator(store, ports.RealClock{}, cfg.WindowSize, cfg.GracePeriod, s.emit)
 	return s, nil
@@ -310,53 +290,29 @@ func (s *aggregatorService) MetricsSnapshot() MetricsSnapshot {
 	return s.core.metrics.snapshot()
 }
 
-// emit publica um WindowResult no tópico de saída (writer compartilhado, protegido).
+// emit publica um WindowResult no tópico de saída. Chamado apenas pelo loop
+// sequencial, então não precisa de lock.
 func (s *aggregatorService) emit(ctx context.Context, res model.WindowResult) error {
 	data, err := json.Marshal(res)
 	if err != nil {
 		return err
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 	return s.writer.WriteMessages(ctx, kafka.Message{Key: []byte(res.EntityKey), Value: data})
 }
 
-// Start restaura o estado, consome o tópico de entrada e processa até ctx ser
-// cancelado, executando um snapshot final antes de retornar.
+// Start restaura o estado e processa o tópico de entrada num loop sequencial até
+// ctx ser cancelado, com um snapshot final antes de retornar.
 func (s *aggregatorService) Start(ctx context.Context) error {
 	restored, err := s.store.Restore()
 	if err != nil {
 		return err
 	}
+	for p, o := range restored {
+		s.offsets[p] = o
+	}
 	logger.Infof(ctx, "aggregatorService.Start",
 		"state restored: %d partition offsets snapshotted; group resumes from committed offsets",
 		len(restored))
-
-	s.fetchWg.Add(1)
-	go s.fetch(ctx)
-
-	s.tickWg.Add(1)
-	go s.runCloseTicker(ctx)
-
-	s.tickWg.Add(1)
-	go s.runSnapshotTicker(ctx)
-
-	<-ctx.Done()
-	logger.Info(ctx, "aggregatorService.Start", "context cancelled, draining before final snapshot")
-
-	s.fetchWg.Wait()  // fecha os canais dos workers ao sair
-	s.workerWg.Wait() // workers drenam mensagens pendentes
-	s.tickWg.Wait()   // tickers param
-
-	if err := s.snapshotAndCommit(context.Background()); err != nil {
-		logger.Error(ctx, "aggregatorService.Start", "final snapshot/commit failed", err)
-	}
-	return nil
-}
-
-// fetch lê do group reader e despacha cada mensagem para o worker da partição.
-func (s *aggregatorService) fetch(ctx context.Context) {
-	defer s.fetchWg.Done()
 
 	for {
 		m, err := s.reader.FetchMessage(ctx)
@@ -364,7 +320,7 @@ func (s *aggregatorService) fetch(ctx context.Context) {
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 				break
 			}
-			logger.Error(ctx, "aggregatorService.fetch", "failed to fetch message", err)
+			logger.Error(ctx, "aggregatorService.Start", "failed to fetch message", err)
 			select {
 			case <-time.After(readBackoff):
 			case <-ctx.Done():
@@ -375,121 +331,42 @@ func (s *aggregatorService) fetch(ctx context.Context) {
 			continue
 		}
 
-		w := s.workerFor(ctx, m.Partition)
-		select {
-		case w.ch <- m:
-		case <-ctx.Done():
-		}
+		s.handleMessage(ctx, m)
 	}
 
-	s.workersMu.Lock()
-	for _, w := range s.workers {
-		close(w.ch)
-	}
-	s.workersMu.Unlock()
-}
-
-// workerFor devolve (criando sob demanda) o worker de uma partição.
-func (s *aggregatorService) workerFor(ctx context.Context, partition int) *partitionWorker {
-	s.workersMu.Lock()
-	defer s.workersMu.Unlock()
-
-	if w, ok := s.workers[partition]; ok {
-		return w
-	}
-	w := &partitionWorker{id: partition, ch: make(chan kafka.Message, workerChanSize)}
-	s.workers[partition] = w
-	s.workerWg.Add(1)
-	go s.runWorker(ctx, w)
-	return w
-}
-
-// runWorker processa serialmente as mensagens de uma partição.
-func (s *aggregatorService) runWorker(ctx context.Context, w *partitionWorker) {
-	defer s.workerWg.Done()
-
-	for m := range w.ch {
-		var ev model.Event
-		if err := json.Unmarshal(m.Value, &ev); err != nil {
-			s.core.metrics.Received.Add(1)
-			s.core.metrics.Invalid.Add(1)
-			logger.Errorf(ctx, "aggregatorService.runWorker",
-				"failed to unmarshal message at partition %d offset %d", err, m.Partition, m.Offset)
-		} else if err := s.core.processEvent(ctx, m.Partition, ev); err != nil {
-			logger.Error(ctx, "aggregatorService.runWorker", "failed to process event", err)
-		}
-
-		w.mu.Lock()
-		w.lastMsg = m
-		w.hasMsg = true
-		w.mu.Unlock()
-	}
-}
-
-func (s *aggregatorService) runCloseTicker(ctx context.Context) {
-	defer s.tickWg.Done()
-
-	t := time.NewTicker(closeCheckInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-t.C:
-			if err := s.core.closeWindows(ctx); err != nil {
-				logger.Error(ctx, "aggregatorService.runCloseTicker", "closeWindows failed", err)
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-func (s *aggregatorService) runSnapshotTicker(ctx context.Context) {
-	defer s.tickWg.Done()
-
-	t := time.NewTicker(s.cfg.SnapshotInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-t.C:
-			if err := s.snapshotAndCommit(ctx); err != nil {
-				logger.Error(ctx, "aggregatorService.runSnapshotTicker", "snapshot/commit failed", err)
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// snapshotAndCommit persiste o estado + offsets e SÓ ENTÃO comita os offsets no
-// Kafka. Nunca comita além do que foi snapshotado (regra de ouro).
-func (s *aggregatorService) snapshotAndCommit(ctx context.Context) error {
-	s.workersMu.Lock()
-	workers := make([]*partitionWorker, 0, len(s.workers))
-	for _, w := range s.workers {
-		workers = append(workers, w)
-	}
-	s.workersMu.Unlock()
-
-	offsets := make(map[int]int64)
-	commit := make([]kafka.Message, 0, len(workers))
-	for _, w := range workers {
-		w.mu.Lock()
-		if w.hasMsg {
-			offsets[w.id] = w.lastMsg.Offset + 1
-			commit = append(commit, w.lastMsg)
-		}
-		w.mu.Unlock()
-	}
-
-	if err := s.store.Snapshot(offsets); err != nil {
-		return err
-	}
-	if len(commit) > 0 {
-		if err := s.reader.CommitMessages(ctx, commit...); err != nil {
-			return err
-		}
+	logger.Info(ctx, "aggregatorService.Start", "context cancelled, taking final snapshot")
+	if err := s.store.Snapshot(s.offsets); err != nil {
+		logger.Error(ctx, "aggregatorService.Start", "final snapshot failed", err)
 	}
 	return nil
+}
+
+// handleMessage processa uma mensagem de ponta a ponta: agrega, fecha janelas
+// prontas, faz snapshot do estado+offset e SÓ ENTÃO comita o offset no Kafka
+// (regra de ouro: nunca comita além do que foi snapshotado).
+func (s *aggregatorService) handleMessage(ctx context.Context, m kafka.Message) {
+	var ev model.Event
+	if err := json.Unmarshal(m.Value, &ev); err != nil {
+		s.core.metrics.Received.Add(1)
+		s.core.metrics.Invalid.Add(1)
+		logger.Errorf(ctx, "aggregatorService.handleMessage",
+			"failed to unmarshal message at partition %d offset %d", err, m.Partition, m.Offset)
+	} else if err := s.core.processEvent(ctx, m.Partition, ev); err != nil {
+		logger.Error(ctx, "aggregatorService.handleMessage", "failed to process event", err)
+	}
+
+	if err := s.core.closeWindows(ctx); err != nil {
+		logger.Error(ctx, "aggregatorService.handleMessage", "closeWindows failed", err)
+	}
+
+	s.offsets[m.Partition] = m.Offset + 1
+	if err := s.store.Snapshot(s.offsets); err != nil {
+		logger.Error(ctx, "aggregatorService.handleMessage", "snapshot failed, offset not committed", err)
+		return
+	}
+	if err := s.reader.CommitMessages(ctx, m); err != nil {
+		logger.Error(ctx, "aggregatorService.handleMessage", "commit failed", err)
+	}
 }
 
 // Close libera os recursos de rede. O snapshot final acontece em Start (ctx.Done).
