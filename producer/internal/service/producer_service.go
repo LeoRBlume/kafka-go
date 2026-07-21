@@ -33,6 +33,7 @@ func NewProducerService(cfg *config.Config) ports.ProducerPort {
 	writer := &kafka.Writer{
 		Addr:         kafka.TCP(cfg.KafkaBroker),
 		Topic:        cfg.KafkaTopic,
+		Balancer:     &kafka.Hash{},
 		Async:        false,
 		RequiredAcks: kafka.RequireOne,
 		Compression:  kafka.Snappy,
