@@ -131,9 +131,6 @@ func (s *aggregatorService) Start(ctx context.Context) error {
 // Rastreabilidade: cada evento vira um trace_id (o ev.ID) injetado no ctx, de
 // modo que toda linha logada durante seu processamento carrega trace_id=<id>.
 func (s *aggregatorService) handleMessage(ctx context.Context, m kafka.Message) {
-	logger.Debugf(ctx, "aggregatorService.handleMessage",
-		"fetched: partition=%d offset=%d key=%s bytes=%d", m.Partition, m.Offset, string(m.Key), len(m.Value))
-
 	var ev model.Event
 	if err := json.Unmarshal(m.Value, &ev); err != nil {
 		errCtx := logger.WithTraceID(ctx, fmt.Sprintf("p%d-o%d", m.Partition, m.Offset))
@@ -151,6 +148,7 @@ func (s *aggregatorService) handleMessage(ctx context.Context, m kafka.Message) 
 	if err := s.core.closeWindows(ctx); err != nil {
 		logger.Error(ctx, "aggregatorService.handleMessage", "closeWindows failed", err)
 	}
+	s.core.logOpenWindows(ctx)
 
 	s.offsets[m.Partition] = m.Offset + 1
 	if err := s.store.Snapshot(s.offsets); err != nil {
@@ -159,11 +157,7 @@ func (s *aggregatorService) handleMessage(ctx context.Context, m kafka.Message) 
 	}
 	if err := s.reader.CommitMessages(ctx, m); err != nil {
 		logger.Error(ctx, "aggregatorService.handleMessage", "commit failed", err)
-		return
 	}
-	logger.Debugf(ctx, "aggregatorService.handleMessage",
-		"snapshot+commit ok: partition=%d next_offset=%d open_windows=%d",
-		m.Partition, s.offsets[m.Partition], s.core.openWindows())
 }
 
 // Close libera os recursos de rede. O snapshot final acontece em Start (ctx.Done).
