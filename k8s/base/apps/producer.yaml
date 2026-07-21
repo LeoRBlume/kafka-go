@@ -30,6 +30,8 @@ spec:
               value: "10000"
             - name: CHANNEL_SIZE
               value: "1000"
+            - name: ENTITY_KEY_COUNT
+              value: "10"
           readinessProbe:
             httpGet:
               path: /health

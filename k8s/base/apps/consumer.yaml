@@ -1,10 +1,43 @@
-apiVersion: apps/v1
-kind: Deployment
+# O agregador mantém estado em disco local (snapshot v1, sem changelog topic).
+# Por isso roda como StatefulSet com volume estável por pod: o recovery depende
+# do snapshot sobreviver ao restart do MESMO pod. Caveat: se uma partição migrar
+# de pod num rebalance do consumer group, o estado local não viaja junto — isso
+# fica para a iteração futura com changelog topic (ver docs/.../design.md §4.6).
+apiVersion: v1
+kind: Service
 metadata:
   name: consumer
   namespace: apps
 spec:
-  replicas: 50
+  clusterIP: None # headless: identidade estável exigida pelo StatefulSet
+  selector:
+    app: consumer
+  ports:
+    - port: 8082
+      targetPort: 8082
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: consumer-nodeport
+  namespace: apps
+spec:
+  type: NodePort
+  selector:
+    app: consumer
+  ports:
+    - port: 8082
+      targetPort: 8082
+      nodePort: 30082
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: consumer
+  namespace: apps
+spec:
+  serviceName: consumer
+  replicas: 3 # alinhar à contagem de partições de demo-topic
   selector:
     matchLabels:
       app: consumer
@@ -25,26 +58,33 @@ spec:
             - name: KAFKA_TOPIC
               value: "demo-topic"
             - name: KAFKA_GROUP_ID
-              value: "demo-consumer-group"
+              value: "windowed-aggregator"
+            - name: OUTPUT_TOPIC
+              value: "windowed-results"
+            - name: WINDOW_SIZE
+              value: "5m"
+            - name: GRACE_PERIOD
+              value: "1m"
+            - name: SNAPSHOT_INTERVAL
+              value: "30s"
+            - name: STATE_DIR
+              value: "/data/state"
             - name: SERVER_PORT
               value: "8082"
+          volumeMounts:
+            - name: state
+              mountPath: /data/state
           readinessProbe:
             httpGet:
               path: /health
               port: 8082
             initialDelaySeconds: 5
             periodSeconds: 10
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: consumer
-  namespace: apps
-spec:
-  type: NodePort
-  selector:
-    app: consumer
-  ports:
-    - port: 8082
-      targetPort: 8082
-      nodePort: 30082
+  volumeClaimTemplates:
+    - metadata:
+        name: state
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
