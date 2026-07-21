@@ -1,6 +1,9 @@
 package service
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+	"time"
+)
 
 // Metrics são os contadores observáveis do agregador (thread-safe via atomic).
 type Metrics struct {
@@ -31,4 +34,12 @@ func (m *Metrics) snapshot() MetricsSnapshot {
 		Aggregated:     m.Aggregated.Load(),
 		WindowsEmitted: m.Emitted.Load(),
 	}
+}
+
+// Observation é uma leitura pontual de tudo que o /metrics expõe: os contadores
+// mais os gauges de estado (janelas abertas e watermark por partição).
+type Observation struct {
+	Metrics     MetricsSnapshot
+	OpenWindows int
+	Watermarks  map[int]time.Time // event-time watermark por partição
 }

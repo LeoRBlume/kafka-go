@@ -18,7 +18,7 @@ const readBackoff = 2 * time.Second
 // Aggregator é o serviço de agregação com observabilidade de métricas.
 type Aggregator interface {
 	ports.AggregatorPort
-	MetricsSnapshot() MetricsSnapshot
+	Observe() Observation
 }
 
 // aggregatorService liga o core ao Kafka num loop sequencial e single-threaded:
@@ -67,9 +67,9 @@ func NewAggregatorService(cfg *config.Config) (Aggregator, error) {
 	return s, nil
 }
 
-// MetricsSnapshot expõe os contadores para o controller.
-func (s *aggregatorService) MetricsSnapshot() MetricsSnapshot {
-	return s.core.metrics.snapshot()
+// Observe expõe contadores + gauges de estado para o controller.
+func (s *aggregatorService) Observe() Observation {
+	return s.core.observe()
 }
 
 // emit publica um WindowResult no tópico de saída. Chamado apenas pelo loop

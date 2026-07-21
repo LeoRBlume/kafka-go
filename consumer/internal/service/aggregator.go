@@ -194,3 +194,22 @@ func average(sum float64, count int64) float64 {
 	}
 	return sum / float64(count)
 }
+
+// observe devolve uma leitura pontual dos contadores + gauges de estado
+// (janelas abertas e watermark por partição) para o endpoint de métricas.
+func (a *aggregator) observe() Observation {
+	entries, _ := a.store.All()
+
+	a.wmMu.RLock()
+	watermarks := make(map[int]time.Time, len(a.watermarks))
+	for p, t := range a.watermarks {
+		watermarks[p] = t
+	}
+	a.wmMu.RUnlock()
+
+	return Observation{
+		Metrics:     a.metrics.snapshot(),
+		OpenWindows: len(entries),
+		Watermarks:  watermarks,
+	}
+}
