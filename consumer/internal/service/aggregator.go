@@ -121,6 +121,9 @@ func (a *aggregator) processEvent(ctx context.Context, partition int, ev model.E
 	if _, dup := seen[ev.ID]; dup {
 		a.metrics.Duplicates.Add(1)
 		a.advanceWatermark(partition, ts)
+		logger.Debugf(ctx, "aggregator.processEvent",
+			"duplicate skipped: entity_key=%s window_start=%s partition=%d",
+			ev.EntityKey, windowStart.Format(time.RFC3339), partition)
 		return nil
 	}
 
@@ -136,6 +139,9 @@ func (a *aggregator) processEvent(ctx context.Context, partition int, ev model.E
 
 	a.metrics.Aggregated.Add(1)
 	a.advanceWatermark(partition, ts)
+	logger.Debugf(ctx, "aggregator.processEvent",
+		"aggregated: entity_key=%s window_start=%s partition=%d value=%.4f count=%d sum=%.4f",
+		ev.EntityKey, windowStart.Format(time.RFC3339), partition, ev.Value, next.Count, next.Sum)
 	return nil
 }
 
@@ -158,6 +164,10 @@ func (a *aggregator) closeWindows(ctx context.Context) error {
 			continue
 		}
 
+		// trace_id por janela: entity_key|window_start, para correlacionar a
+		// emissão de uma janela específica nos logs.
+		wCtx := logger.WithTraceID(ctx, e.EntityKey+"|"+e.WindowStart.Format(time.RFC3339))
+
 		res := model.WindowResult{
 			EntityKey:   e.EntityKey,
 			WindowStart: e.WindowStart,
@@ -168,8 +178,8 @@ func (a *aggregator) closeWindows(ctx context.Context) error {
 			EmittedAt:   a.clock.Now(),
 		}
 
-		if err := a.emit(ctx, res); err != nil {
-			logger.Errorf(ctx, "aggregator.closeWindows",
+		if err := a.emit(wCtx, res); err != nil {
+			logger.Errorf(wCtx, "aggregator.closeWindows",
 				"failed to emit window entity_key=%s window_start=%s (kept for retry)",
 				err, e.EntityKey, e.WindowStart.Format(time.RFC3339))
 			continue
@@ -180,12 +190,18 @@ func (a *aggregator) closeWindows(ctx context.Context) error {
 		}
 		a.metrics.Emitted.Add(1)
 
-		logger.Infof(ctx, "aggregator.closeWindows",
-			"window emitted: entity_key=%s window=[%s,%s) count=%d sum=%.4f avg=%.4f",
+		logger.Infof(wCtx, "aggregator.closeWindows",
+			"window emitted: entity_key=%s window=[%s,%s) count=%d sum=%.4f avg=%.4f watermark=%s",
 			res.EntityKey, res.WindowStart.Format(time.RFC3339), res.WindowEnd.Format(time.RFC3339),
-			res.Count, res.Sum, res.Avg)
+			res.Count, res.Sum, res.Avg, wm.Format(time.RFC3339))
 	}
 	return nil
+}
+
+// openWindows devolve o número de janelas vivas no estado (gauge de backlog).
+func (a *aggregator) openWindows() int {
+	entries, _ := a.store.All()
+	return len(entries)
 }
 
 func average(sum float64, count int64) float64 {

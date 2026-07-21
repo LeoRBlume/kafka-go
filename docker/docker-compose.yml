@@ -67,6 +67,7 @@ services:
       GRACE_PERIOD: 1m
       SNAPSHOT_INTERVAL: 30s
       STATE_DIR: /data/state
+      LOG_LEVEL: debug
       SERVER_PORT: "8082"
     volumes:
       - aggregator-state:/data/state

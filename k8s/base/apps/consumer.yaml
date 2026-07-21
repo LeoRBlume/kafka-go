@@ -73,6 +73,8 @@ spec:
               value: "30s"
             - name: STATE_DIR
               value: "/data/state"
+            - name: LOG_LEVEL
+              value: "info" # troque para "debug" para rastrear evento a evento
             - name: SERVER_PORT
               value: "8082"
           volumeMounts:
