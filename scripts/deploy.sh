@@ -31,16 +31,16 @@ echo "==> Creating Kafka topic..."
 kubectl exec -n kafka kafka-0 -- kafka-topics \
   --bootstrap-server localhost:9092 \
   --create --topic demo-topic \
-  --partitions 50 --replication-factor 1 \
+  --partitions 10 --replication-factor 1 \
   --if-not-exists
 
 echo "==> Restarting consumers to pick up topic assignment..."
-kubectl rollout restart deployment/consumer -n apps
-kubectl rollout status deployment/consumer -n apps --timeout=60s
+kubectl rollout restart statefulset/consumer -n apps
+kubectl rollout status statefulset/consumer -n apps --timeout=120s
 
 echo "==> Waiting for apps to be ready..."
 kubectl rollout status deployment/producer -n apps --timeout=60s
-kubectl rollout status deployment/consumer -n apps --timeout=60s
+kubectl rollout status statefulset/consumer -n apps --timeout=120s
 
 echo ""
 echo "==> Done! Endpoints:"
